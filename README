@@ -1,0 +1,58 @@
+mstscdump: MSTSC Packet Dump Utility
+====================================
+
+The mstscdump utility allows unencrypted RDP packets being sent or received by
+MSTSC.EXE (or any other application that loads MSTSCAX.DLL) to be captured into
+a PCAP file for later analysis in various tools such as Microsoft Message Analyzer,
+Microsoft Network Monitor, or WireShark.  It also demonstrates how to hook into the
+ActiveX interfaces exposed by MSTSCAX.DLL.
+
+
+How to use the utility
+----------------------
+
+Precompiled binaries for x86 and x64 are provided in the bin\x86 and bin\x64
+directories, respectively.  Open a Command Prompt window and change directories
+to the appropriate directory.  Two binaries are provided.
+
+    mstscdump.exe    - Main binary for the utility
+    mstschook.dll    - Hook module for hooking MSTSCAX.DLL
+
+When executed, the utility will create a mstscdump.pcap file containing the
+captured packets.  This file will get written to the current directory.
+
+The following examples will cause mstscdump to execute MSTSC.EXE.
+
+    mstscdump			- runs MSTSC.EXE with no arguments
+    mstscdump /v:MikeM-Win2012	- runs MSTSC.EXE with specified arguments
+    mstscdump MikeM-Win2012.rdp	- runs MSTSC.EXE with an RDP file as the argument
+
+The following example will cause mstscdump to execute VMCONNECT.EXE.
+
+    mstscdump vmconnect localhost MikeM-Win2012
+
+Any application that loads MSTSCAX.DLL can be analyzed by run "mstscdump <program>"
+where <program> is the application (plus command line arguments) to be analyzed.
+
+
+Building the utility from sources
+---------------------------------
+
+A build.bat and Makefile have been provided to assist in building the software
+from sources.  A proper installation of Visual Studio is required.  Visual Studio
+2012 was used for testing purposes.
+
+To build the software:
+
+    1.  Open a Developer Command Prompt window for Visual Studio.
+    2.  Change directories to the root directory for mstscdump.
+    3.  Type "build" to execute the build.bat script.
+
+Resulting binaries are written to the bin\x86 and bin\x64 directories.
+
+
+Additional Information
+----------------------
+
+Feature requests, bug reports, or kudos can be sent to Mike McDonald at
+mikem@nogginware.com.

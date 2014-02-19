@@ -31,7 +31,7 @@ The following example will cause mstscdump to execute VMCONNECT.EXE.
 
     mstscdump vmconnect localhost MikeM-Win2012
 
-Any application that loads MSTSCAX.DLL can be analyzed by run "mstscdump <program>"
+Any application loading MSTSCAX.DLL can be analyzed by running "mstscdump <program>"
 where <program> is the application (plus command line arguments) to be analyzed.
 
 

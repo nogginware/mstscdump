@@ -2,7 +2,7 @@
 //
 // NWHookAPI.cpp
 //
-// Copyright (C) 2014 Nogginware Corporation
+// Copyright (C) 2014-2022 Nogginware Corporation
 //
 // Enables hooking of Windows system calls.
 //

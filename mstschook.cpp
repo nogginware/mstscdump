@@ -2,7 +2,7 @@
  * mstscdump: MSTSC Packet Dump Utility
  * MSTSCAX Packet Dump Hook
  *
- * Copyright 2014 Nogginware Corporation <mikem@nogginware.com>
+ * Copyright 2014-2022 Nogginware Corporation <mikem@nogginware.com>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+#define _CRT_SECURE_NO_WARNINGS
+#define SECURITY_WIN32
+#define WIN32_LEAN_AND_MEAN
 
 #include <intrin.h>
 #include <winsock2.h>
@@ -37,6 +41,8 @@
 #include "mstscax.tli"
 #endif
 
+#pragma comment(lib, "ws2_32.lib")
+
 using namespace MSTSCLib;
 
 ////////////////////////////////////////////////////////////////////////
@@ -54,10 +60,31 @@ using namespace MSTSCLib;
 // Type Definitions
 //
 
-typedef HRESULT (__stdcall *LPDllGetClassObject)(REFCLSID rclsid, REFIID riid, LPVOID *ppv);
+typedef void (WINAPI *LPCloseThreadpoolIo)(PTP_IO);
+typedef PTP_IO (WINAPI *LPCreateThreadpoolIo)(HANDLE, PTP_WIN32_IO_CALLBACK, PVOID, PTP_CALLBACK_ENVIRON);
+typedef BOOL (WINAPI *LPGetOverlappedResult)(HANDLE, LPWSAOVERLAPPED, LPDWORD, BOOL);
+typedef BOOL (WINAPI *LPGetOverlappedResultEx)(HANDLE, LPWSAOVERLAPPED, LPDWORD, DWORD, BOOL);
+typedef void (WINAPI *LPStartThreadpoolIo)(PTP_IO);
 
-typedef int (__stdcall *LPrecv)(SOCKET, char *, int, int);
-typedef int (__stdcall *LPsend)(SOCKET, char *, int, int);
+typedef HRESULT (WINAPI *LPDllGetClassObject)(REFCLSID rclsid, REFIID riid, LPVOID *ppv);
+
+typedef int (WSAAPI *LPWSAAsyncSelect)(SOCKET, HWND, UINT, long);
+typedef int (WSAAPI *LPWSAEnumNetworkEvents)(SOCKET, WSAEVENT, LPWSANETWORKEVENTS);
+typedef int (WSAAPI *LPWSAEventSelect)(SOCKET, WSAEVENT, long);
+typedef int (WSAAPI *LPWSAGetLastError)();
+typedef BOOL (WSAAPI *LPWSAGetOverlappedResult)(SOCKET, LPWSAOVERLAPPED, LPDWORD, BOOL, LPDWORD);
+typedef int (WSAAPI *LPWSAIoctl)(SOCKET, DWORD, LPVOID, DWORD, LPVOID, DWORD, LPDWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE);
+typedef int (WSAAPI *LPWSARecv)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE);
+typedef int (WSAAPI *LPWSASend)(SOCKET, LPWSABUF, DWORD, LPDWORD, DWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE);
+typedef void (WSAAPI *LPWSASetLastError)(int iError);
+typedef SOCKET (WSAAPI *LPWSASocketW)(int, int, int, LPWSAPROTOCOL_INFOW, GROUP, DWORD);
+typedef DWORD (WSAAPI *LPWSAWaitForMultipleEvents)(DWORD, const WSAEVENT *, BOOL, DWORD, BOOL);
+typedef int (WSAAPI *LPgetsockopt)(SOCKET, int, int, char *, int *);
+typedef int (WSAAPI *LPioctlsocket)(SOCKET, long cmd, u_long *argp);
+typedef int (WSAAPI *LPrecv)(SOCKET, char *, int, int);
+typedef int (WSAAPI *LPselect)(int, fd_set *, fd_set *, fd_set *, const timeval *);
+typedef int (WSAAPI *LPsend)(SOCKET, char *, int, int);
+typedef int (WSAAPI *LPsetsockopt)(SOCKET, int, int, const char *, int);
 
 typedef signed char sint8;
 typedef signed short sint16;
@@ -128,6 +155,7 @@ typedef struct tcp_hdr_s
 // Data Declarations
 //
 static HMODULE g_hModule;
+static HMODULE g_hModKernel32;
 static HMODULE g_hModMsTscAx;
 static HMODULE g_hModSspiCli;
 static HMODULE g_hModWinsock;
@@ -148,6 +176,12 @@ static uint16 g_serverTcpPort = 3389;
 static uint32 g_clientSeqNumber;
 static uint32 g_serverSeqNumber;
 
+static NWHOOKAPI_HOOK(LPCloseThreadpoolIo, Real_CloseThreadpoolIo);
+static NWHOOKAPI_HOOK(LPCreateThreadpoolIo, Real_CreateThreadpoolIo);
+static NWHOOKAPI_HOOK(LPGetOverlappedResult, Real_GetOverlappedResult);
+static NWHOOKAPI_HOOK(LPGetOverlappedResultEx, Real_GetOverlappedResultEx);
+static NWHOOKAPI_HOOK(LPStartThreadpoolIo, Real_StartThreadpoolIo);
+
 static NWHOOKAPI_HOOK(LPDllGetClassObject, Real_DllGetClassObject);
 
 static NWHOOKAPI_HOOK(ACCEPT_SECURITY_CONTEXT_FN, Real_AcceptSecurityContext);
@@ -156,8 +190,36 @@ static NWHOOKAPI_HOOK(ACQUIRE_CREDENTIALS_HANDLE_FN_W, Real_AcquireCredentialsHa
 static NWHOOKAPI_HOOK(DECRYPT_MESSAGE_FN, Real_DecryptMessage);
 static NWHOOKAPI_HOOK(ENCRYPT_MESSAGE_FN, Real_EncryptMessage);
 
+static NWHOOKAPI_HOOK(LPWSAAsyncSelect, Real_WSAAsyncSelect);
+static NWHOOKAPI_HOOK(LPWSAEnumNetworkEvents, Real_WSAEnumNetworkEvents);
+static NWHOOKAPI_HOOK(LPWSAEventSelect, Real_WSAEventSelect);
+static NWHOOKAPI_HOOK(LPWSAGetLastError, Real_WSAGetLastError);
+static NWHOOKAPI_HOOK(LPWSAGetOverlappedResult, Real_WSAGetOverlappedResult);
+static NWHOOKAPI_HOOK(LPWSAIoctl, Real_WSAIoctl);
+static NWHOOKAPI_HOOK(LPWSARecv, Real_WSARecv);
+static NWHOOKAPI_HOOK(LPWSASend, Real_WSASend);
+static NWHOOKAPI_HOOK(LPWSASetLastError, Real_WSASetLastError);
+static NWHOOKAPI_HOOK(LPWSASocketW, Real_WSASocketW);
+static NWHOOKAPI_HOOK(LPWSAWaitForMultipleEvents, Real_WSAWaitForMultipleEvents);
+static NWHOOKAPI_HOOK(LPgetsockopt, Real_getsockopt);
+static NWHOOKAPI_HOOK(LPioctlsocket, Real_ioctlsocket);
 static NWHOOKAPI_HOOK(LPrecv, Real_recv);
+static NWHOOKAPI_HOOK(LPselect, Real_select);
 static NWHOOKAPI_HOOK(LPsend, Real_send);
+static NWHOOKAPI_HOOK(LPsetsockopt, Real_setsockopt);
+
+typedef struct
+{
+    SOCKET socket;
+    WSAOVERLAPPED overlapped;
+    LPWSABUF lpBuffers;
+    DWORD dwBufferCount;
+    LPWSAOVERLAPPED lpOverlapped;
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine;
+} wsa_context_t;
+
+static wsa_context_t g_wsaRecvContext;
+static wsa_context_t g_wsaSendContext;
 
 ////////////////////////////////////////////////////////////////////////
 //
@@ -175,7 +237,6 @@ static VOID WriteCLSID(REFCLSID rclsid)
 	LPOLESTR polestrCLSID;
 	if (StringFromCLSID(rclsid, &polestrCLSID) == S_OK)
 	{
-		HKEY hKey;
 		LONG lStatus;
 		char szSubKey[128];
 		char szValue[128];
@@ -205,7 +266,6 @@ static VOID WriteIID(REFIID riid)
 	
 	if (StringFromIID(riid, &polestrIID) == S_OK)
 	{
-		HKEY hKey;
 		LONG lStatus;
 		char szSubKey[128];
 		char szValue[128];
@@ -298,7 +358,7 @@ static VOID DumpMsTscSecuredSettings(IMsTscSecuredSettings *p)
 	
 	DumpString("StartProgram", p->GetStartProgram());
 	DumpString("WorkDir", p->GetWorkDir());
-	DumpString("FullScreen", p->GetFullScreen());
+	DumpLong("FullScreen", p->GetFullScreen());
 }
 
 static VOID DumpMsRdpClientAdvancedSettings(IMsRdpClientAdvancedSettings *p)
@@ -1145,7 +1205,7 @@ static VOID DumpMsTscProperties(IUnknown *pUnknown)
 	}
 	else WriteLog("IMsRdpClient not implemented");
 
-#if 0
+#if 1
 	if (pUnknown->QueryInterface(IID_IMsRdpClientNonScriptable, (LPVOID *)&pMsRdpClientNonScriptable) == S_OK)
 	{
 		pMsRdpClientNonScriptable->Release();
@@ -1804,7 +1864,7 @@ static BOOL IsAddressInModule(PVOID pAddress, LPCTSTR pszModule)
 	HMODULE hModule;
 	MODULEINFO mi;
 	MEMORY_BASIC_INFORMATION mbi;
-	DWORD dwStartAddr, dwEndAddr;
+	LPVOID pStartAddr, pEndAddr;
 	BOOL fOk;
 
 	//WriteLog("IsAddressInModule - Address=%x,Module=%s", pAddress, pszModule);
@@ -1821,10 +1881,10 @@ static BOOL IsAddressInModule(PVOID pAddress, LPCTSTR pszModule)
 	if (VirtualQuery(pAddress, &mbi, sizeof(mbi)) == 0) return FALSE;
 
 	// Determine if the specified address is in the module. 
-	dwStartAddr = (DWORD)mi.lpBaseOfDll;
-	dwEndAddr = (DWORD)mi.lpBaseOfDll + mi.SizeOfImage - 1;
-	fOk = ((DWORD)pAddress >= dwStartAddr) && ((DWORD)pAddress <= dwEndAddr) ? TRUE : FALSE;
-	//WriteLog("   BaseAddress=%x,RegionSize=%d,%s", mbi.BaseAddress, mbi.RegionSize, fOk ? "YES" : "NO");
+	pStartAddr = mi.lpBaseOfDll;
+	pEndAddr = (LPVOID)((PBYTE)mi.lpBaseOfDll + mi.SizeOfImage - 1);
+	fOk = (pAddress >= pStartAddr) && (pAddress <= pEndAddr) ? TRUE : FALSE;
+	WriteLog("   BaseAddress=%p,RegionSize=%d,%s", mbi.BaseAddress, mbi.RegionSize, fOk ? "YES" : "NO");
 
 	return fOk;
 }
@@ -1922,12 +1982,16 @@ static VOID WritePCapPacket(FILE *file, LPBYTE pBuffer, DWORD cbBuffer, BOOL fOu
 	tcp_hdr_t tcpHdr;
 	unsigned int uiPacketLength;
 
+	WriteLog("WritePCapPacket - pBuffer=%p, cbBuffer=%lu, fOutbound=%d", pBuffer, cbBuffer, fOutbound);
+
 	if (pBuffer == NULL) return;
 	if (cbBuffer == 0) return;
 	if (cbBuffer > 32768) return;
-	if (pBuffer[0] != 0x03) return;
+	//if (pBuffer[0] != 0x03) return;
 
 	uiPacketLength = cbBuffer + sizeof(ethernetHdr) + sizeof(ipv4Hdr) + sizeof(tcpHdr);
+
+	WriteLog("uiPacketLength=%lu", cbBuffer);
 
 	if (!g_fPCapHeaderWritten)
 	{
@@ -1961,7 +2025,7 @@ static VOID WritePCapPacket(FILE *file, LPBYTE pBuffer, DWORD cbBuffer, BOOL fOu
 	// Write the IPv4 header.
 	ipv4Hdr.version_ihl = (0x04 << 4) | 0x05;
 	ipv4Hdr.dscp_ecn = (0x00 << 2) | 0x00;
-	ipv4Hdr.total_length = htons(cbBuffer + sizeof(ipv4Hdr) + sizeof(tcpHdr));
+	ipv4Hdr.total_length = htons((u_short)cbBuffer + sizeof(ipv4Hdr) + sizeof(tcpHdr));
 	ipv4Hdr.identification = htons(0);
 	ipv4Hdr.flags_fragment_offset = htons((0x02 << 13) | 0x00);
 	ipv4Hdr.ttl = 128;
@@ -2086,12 +2150,188 @@ static VOID DumpSecBuffers(LPCTSTR pszLabel, PSecBufferDesc pSecBufferDesc)
 	}
 }
 
+static VOID CaptureWSABuffers(LPWSABUF lpBuffers, DWORD dwBufferCount, DWORD cbTransferred, BOOL fOutbound)
+{
+    WaitForSingleObject(g_hMutex, INFINITE);
+
+    FILE *fp = fopen(PCAP_FILE, "ab");
+    if (fp != NULL)
+    {
+        for (DWORD i = 0; i < dwBufferCount; i++)
+        {
+            if (cbTransferred == 0) break;
+
+            CHAR *buf = lpBuffers[i].buf;
+            ULONG len = cbTransferred > lpBuffers[i].len ? lpBuffers[i].len : cbTransferred;
+            WritePCapPacket(fp, (LPBYTE)buf, len, fOutbound);
+            DumpBuffer((LPBYTE)buf, len);
+            cbTransferred -= len;
+        }
+        fclose(fp);
+    }
+
+    ReleaseMutex(g_hMutex);
+}
+
+
+////////////////////////////////////////////////////////////////////////
+//
+// KERNEL32 Hooks
+//
+typedef struct {
+    PTP_IO pio;
+    PTP_WIN32_IO_CALLBACK pfnio;
+    PVOID pv;
+} ThreadpoolIoContext;
+
+#define MAX_THREADPOOL_IO_CONTEXTS 10
+
+static ThreadpoolIoContext g_ThreadpoolIoContext[MAX_THREADPOOL_IO_CONTEXTS];
+
+ThreadpoolIoContext *AllocThreadpoolIoContext()
+{
+    for (int i = 0; i < MAX_THREADPOOL_IO_CONTEXTS; i++)
+    {
+        ThreadpoolIoContext *pContext = &g_ThreadpoolIoContext[i];
+        if (pContext->pio == NULL) return pContext;
+    }
+    return NULL;
+}
+
+ThreadpoolIoContext *FindThreadpoolIoContext(PTP_IO pio)
+{
+    for (int i = 0; i < MAX_THREADPOOL_IO_CONTEXTS; i++)
+    {
+        ThreadpoolIoContext *pContext = &g_ThreadpoolIoContext[i];
+        if (pContext->pio == pio) return pContext;
+    }
+    return NULL;
+}
+
+VOID FreeThreadpoolIoContext(ThreadpoolIoContext *pContext)
+{
+    ZeroMemory(pContext, sizeof(*pContext));
+}
+
+VOID CALLBACK
+ThreadpoolIoCompletionCallback(
+    PTP_CALLBACK_INSTANCE Instance,
+    PVOID Context,
+    PVOID Overlapped,
+    ULONG IoResult,
+    ULONG_PTR NumberOfBytesTransferred,
+    PTP_IO pio
+)
+{
+    WriteLog("ThreadpoolIoCompletionCallback(Instance=%p, Context=%p, Overlapped=%p, IoResult=%lx, NumberOfBytesTransferred=%ld, pio=%p",
+        Instance, Context, Overlapped, IoResult, NumberOfBytesTransferred, pio);
+
+    if (!g_fTransportSecured)
+    {
+        if (g_wsaRecvContext.lpOverlapped == Overlapped)
+        {
+            CaptureWSABuffers(g_wsaRecvContext.lpBuffers, g_wsaRecvContext.dwBufferCount, (DWORD)NumberOfBytesTransferred, FALSE);
+        }
+
+        if (g_wsaSendContext.lpOverlapped == Overlapped)
+        {
+            CaptureWSABuffers(g_wsaSendContext.lpBuffers, g_wsaSendContext.dwBufferCount, (DWORD)NumberOfBytesTransferred, TRUE);
+        }
+    }
+
+    ThreadpoolIoContext *pContext = (ThreadpoolIoContext *)Context;
+    pContext->pfnio(Instance, pContext->pv, Overlapped, IoResult, NumberOfBytesTransferred, pio);
+}
+
+void WINAPI
+Hook_CloseThreadpoolIo(
+    PTP_IO pio
+)
+{
+    WriteLog("CloseThreadpoolIo(pio=%p)", pio);
+
+    NWHOOKAPI_CALL(Real_CloseThreadpoolIo)(pio);
+
+    ThreadpoolIoContext *pContext = FindThreadpoolIoContext(pio);
+    if (pContext) FreeThreadpoolIoContext(pContext);
+}
+
+PTP_IO WINAPI
+Hook_CreateThreadpoolIo(
+  HANDLE                fl,
+  PTP_WIN32_IO_CALLBACK pfnio,
+  PVOID                 pv,
+  PTP_CALLBACK_ENVIRON  pcbe
+)
+{
+    PTP_IO pio = NULL;
+
+	WriteLog("CreateThreadpoolIo(fl=%p, pfnio=%p, pv=%p, pcbe=%p)", fl, pfnio, pv, pcbe);
+
+    ThreadpoolIoContext *pContext = AllocThreadpoolIoContext();
+    if (pContext)
+    {
+        pio = NWHOOKAPI_CALL(Real_CreateThreadpoolIo)(fl, ThreadpoolIoCompletionCallback, pContext, pcbe);
+        if (pio)
+        {
+            pContext->pio = pio;
+            pContext->pfnio = pfnio;
+            pContext->pv = pv;
+        }
+        else FreeThreadpoolIoContext(pContext);
+    }
+    else
+    {
+        pio = NWHOOKAPI_CALL(Real_CreateThreadpoolIo)(fl, pfnio, pv, pcbe);
+    }
+    WriteLog("\tpio=%p", pio);
+
+    return pio;
+}
+
+BOOL WINAPI
+Hook_GetOverlappedResult(
+	HANDLE hFile,
+	LPWSAOVERLAPPED lpOverlapped,
+	LPDWORD lpcbTransfer,
+	BOOL fWait
+)
+{
+	WriteLog("GetOverlappedResult(hFile=%x, lpOverlapped=%p, lpcbTransfer=%p, fWait=%d)", hFile, lpOverlapped, lpcbTransfer, fWait ? 1 : 0);
+
+	return NWHOOKAPI_CALL(Real_GetOverlappedResult)(hFile, lpOverlapped, lpcbTransfer, fWait);
+}
+
+BOOL WINAPI
+Hook_GetOverlappedResultEx(
+  HANDLE       hFile,
+  LPOVERLAPPED lpOverlapped,
+  LPDWORD      lpcbTransfer,
+  DWORD        dwMilliseconds,
+  BOOL         bAlertable
+)
+{
+	WriteLog("GetOverlappedResultEx(hFile=%x, lpOverlapped=%p, lpcbTransfer=%p, dwMilliseconds=%lu, bAlertable=%d)", hFile, lpOverlapped, lpcbTransfer, dwMilliseconds, bAlertable ? 1 : 0);
+
+	return NWHOOKAPI_CALL(Real_GetOverlappedResultEx)(hFile, lpOverlapped, lpcbTransfer, dwMilliseconds, bAlertable);
+}
+
+void WINAPI
+Hook_StartThreadpoolIo(
+    PTP_IO pio
+)
+{
+    WriteLog("StartThreadpoolIo(pio=%p)", pio);
+
+    NWHOOKAPI_CALL(Real_StartThreadpoolIo)(pio);
+}
+
 
 ////////////////////////////////////////////////////////////////////////
 //
 // MSTSCAX Hooks
 //
-HRESULT __stdcall
+HRESULT WINAPI
 Hook_DllGetClassObject(
 	REFCLSID rclsid,
 	REFIID riid,
@@ -2209,6 +2449,8 @@ Hook_DecryptMessage(
 {
 	SECURITY_STATUS status;
 
+	WriteLog("DecryptMessage");
+
 	if (!IsAddressInModule(_ReturnAddress(), "MSTSCAX.DLL"))
 	{
 		return NWHOOKAPI_CALL(Real_DecryptMessage)(
@@ -2233,12 +2475,16 @@ Hook_DecryptMessage(
 	DumpSecBuffers("POST-DECRYPTION", pMessage);
 
 	FILE *fp = fopen(PCAP_FILE, "ab");
+	WriteLog("fp=%p", fp);
 	if (fp != NULL)
 	{
 		for (ULONG i = 0; i < pMessage->cBuffers; i++)
 		{
 			PSecBuffer pSecBuffer = &pMessage->pBuffers[i];
-			WritePCapPacket(fp, (LPBYTE)pSecBuffer->pvBuffer, pSecBuffer->cbBuffer, FALSE);
+			if ((pSecBuffer->BufferType & ~SECBUFFER_READONLY) == SECBUFFER_DATA)
+			{
+				WritePCapPacket(fp, (LPBYTE)pSecBuffer->pvBuffer, pSecBuffer->cbBuffer, FALSE);
+			}
 		}
 		fclose(fp);
 	}
@@ -2257,6 +2503,8 @@ Hook_EncryptMessage(
 )
 {
 	SECURITY_STATUS status;
+
+	WriteLog("EncryptMessage");
 
 	if (!IsAddressInModule(_ReturnAddress(), "MSTSCAX.DLL"))
 	{
@@ -2304,6 +2552,7 @@ Hook_EncryptMessage(
 //
 // WS2_32 Hooks
 //
+
 static BOOL IsStreamSocket(SOCKET s)
 {
 	int soType;
@@ -2313,7 +2562,7 @@ static BOOL IsStreamSocket(SOCKET s)
 
 	optval = (char *)&soType;
 	optlen = sizeof(soType);
-	retval = getsockopt(s, SOL_SOCKET, SO_TYPE, optval, &optlen);
+	retval = NWHOOKAPI_CALL(Real_getsockopt)(s, SOL_SOCKET, SO_TYPE, optval, &optlen);
 	if (retval == 0)
 	{
 		return soType == SOCK_STREAM ? TRUE : FALSE;
@@ -2322,7 +2571,330 @@ static BOOL IsStreamSocket(SOCKET s)
 	return TRUE;
 }
 
-int __stdcall
+int WSAAPI
+Hook_WSAAsyncSelect(
+	SOCKET s,
+	HWND hWnd,
+	UINT wMsg,
+	long lEvent
+)
+{
+	WriteLog("WSAAsyncSelect(s=%x, hWnd=%p, wMsg=%x, lEvent=%lx)", s, hWnd, wMsg, lEvent);
+
+	return NWHOOKAPI_CALL(Real_WSAAsyncSelect)(s, hWnd, wMsg, lEvent);
+}
+
+int WSAAPI
+Hook_WSAEnumNetworkEvents(
+	SOCKET s,
+	WSAEVENT hEventObject,
+	LPWSANETWORKEVENTS lpNetworkEvents
+)
+{
+	WriteLog("WSAEnumNetworkEvents(s=%x, hEventObject=%p, lpNetworkEvents=%p)", s, hEventObject, lpNetworkEvents);
+
+	int retval = NWHOOKAPI_CALL(Real_WSAEnumNetworkEvents)(s, hEventObject, lpNetworkEvents);
+	if ((retval == 0) && lpNetworkEvents)
+	{
+		WriteLog("lNetworkEvents=%lx", lpNetworkEvents->lNetworkEvents);
+	}
+
+	return retval;
+}
+
+int WSAAPI
+Hook_WSAEventSelect(
+	SOCKET s,
+	WSAEVENT hEventObject,
+	long lNetworkEvents
+)
+{
+	WriteLog("WSAEventSelect(s=%x, hEventObject=%p, lNetworkEvents=%lx)", s, hEventObject, lNetworkEvents);
+
+	return NWHOOKAPI_CALL(Real_WSAEventSelect)(s, hEventObject, lNetworkEvents);
+}
+
+int WSAAPI
+Hook_WSAGetLastError()
+{
+	return NWHOOKAPI_CALL(Real_WSAGetLastError)();
+}
+
+BOOL WSAAPI
+Hook_WSAGetOverlappedResult(
+	SOCKET s,
+	LPWSAOVERLAPPED lpOverlapped,
+	LPDWORD lpcbTransfer,
+	BOOL fWait,
+	LPDWORD lpdwFlags
+)
+{
+	WriteLog("WSAGetOverlappedResult(s=%x, lpOverlapped=%p, lpcbTransfer=%p, fWait=%d, lpdwFlags=%p)",
+		s, lpOverlapped, lpcbTransfer, fWait ? 1 : 0, lpdwFlags);
+
+	return NWHOOKAPI_CALL(Real_WSAGetOverlappedResult)(s, lpOverlapped, lpcbTransfer, fWait, lpdwFlags);
+}
+
+int WSAAPI
+Hook_WSAIoctl(
+  SOCKET s,
+  DWORD dwIoControlCode,
+  LPVOID lpvInBuffer,
+  DWORD cbInBuffer,
+  LPVOID lpvOutBuffer,
+  DWORD cbOutBuffer,
+  LPDWORD lpcbBytesReturned,
+  LPWSAOVERLAPPED lpOverlapped,
+  LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
+)
+{
+	WriteLog("WSAIoctl(s=%x, dwIoControlCode=%lx, lpvInBuffer=%p, cbInBuffer=%ld, lpvOutBuffer=%p, cbOutBuffer=%ld, lpcbBytesReturned=%p, lpOverlapped=%p, lpCompletionRoutine=%p",
+		s, dwIoControlCode, lpvInBuffer, cbInBuffer, lpvOutBuffer, cbOutBuffer, lpcbBytesReturned, lpOverlapped, lpCompletionRoutine);
+
+	return NWHOOKAPI_CALL(Real_WSAIoctl)(s, dwIoControlCode, lpvInBuffer, cbInBuffer, lpvOutBuffer, cbOutBuffer, lpcbBytesReturned, lpOverlapped, lpCompletionRoutine);
+}
+
+void CALLBACK
+WSARecvCompletionRoutine(
+	DWORD dwError,
+	DWORD cbTransferred,
+	LPWSAOVERLAPPED lpOverlapped,
+	DWORD dwFlags
+)
+{
+	WriteLog("WSARecvCompletionRoutine(dwError=%lu, cbTransferred=%lu, lpOverlapped=%p, dwFlags=%lx)", dwError, cbTransferred, lpOverlapped, dwFlags);
+
+	if (cbTransferred > 0)
+	{
+		CaptureWSABuffers(g_wsaRecvContext.lpBuffers, g_wsaRecvContext.dwBufferCount, cbTransferred, FALSE);
+	}
+
+	if (g_wsaRecvContext.lpCompletionRoutine)
+	{
+		g_wsaRecvContext.lpCompletionRoutine(dwError, cbTransferred, lpOverlapped, dwFlags);
+	}
+}
+
+void CALLBACK
+WSASendCompletionRoutine(
+	DWORD dwError,
+	DWORD cbTransferred,
+	LPWSAOVERLAPPED lpOverlapped,
+	DWORD dwFlags
+)
+{
+	WriteLog("WSASendCompletionRoutine(dwError=%lu, cbTransferred=%lu, lpOverlapped=%p, dwFlags=%lx)", dwError, cbTransferred, lpOverlapped, dwFlags);
+
+	if (cbTransferred > 0)
+	{
+		CaptureWSABuffers(g_wsaSendContext.lpBuffers, g_wsaSendContext.dwBufferCount, cbTransferred, TRUE);
+	}
+
+	if (g_wsaSendContext.lpCompletionRoutine)
+	{
+		g_wsaSendContext.lpCompletionRoutine(dwError, cbTransferred, lpOverlapped, dwFlags);
+	}
+}
+
+int WSAAPI
+Hook_WSARecv(
+	SOCKET s,
+	LPWSABUF lpBuffers,
+	DWORD dwBufferCount,
+	LPDWORD lpNumberOfBytesRecvd,
+	LPDWORD lpFlags,
+	LPWSAOVERLAPPED lpOverlapped,
+	LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
+)
+{
+	WriteLog("WSARecv(s=%x, lpBuffers=%p, dwBufferCount=%lu, lpNumberOfBytesRecvd=%p, lpFlags=%p, lpOverlapped=%p, lpCompletionRoutine=%p)",
+		s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
+	if (lpFlags)
+	{
+		WriteLog("lpFlags=%x", *lpFlags);
+	}
+
+	if (lpOverlapped)
+	{
+		WriteLog("hEvent=%p", lpOverlapped->hEvent);
+	}
+
+	int retval, lasterror;
+	if (IsStreamSocket(s) && !g_fTransportSecured)
+	{
+        // Stash the receive context.
+		ZeroMemory(&g_wsaRecvContext, sizeof(g_wsaRecvContext));
+        g_wsaRecvContext.socket = s;
+		g_wsaRecvContext.lpBuffers = lpBuffers;
+		g_wsaRecvContext.dwBufferCount = dwBufferCount;
+		g_wsaRecvContext.lpOverlapped = lpOverlapped;
+		g_wsaRecvContext.lpCompletionRoutine = lpCompletionRoutine;
+
+		//lpOverlapped = NULL;
+		//lpCompletionRoutine = WSARecvCompletionRoutine;
+
+		retval = NWHOOKAPI_CALL(Real_WSARecv)(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
+		lasterror = NWHOOKAPI_CALL(Real_WSAGetLastError)();
+		WriteLog("retval=%d, lasterror=%d", retval, lasterror);
+        if (retval == 0)
+        {
+            // The receive completed successfully - capture the buffers.
+            CaptureWSABuffers(lpBuffers, dwBufferCount, *lpNumberOfBytesRecvd, FALSE);
+        }
+		if ((retval == SOCKET_ERROR) && (lasterror == WSA_IO_PENDING))
+		{
+            // Asynchronous receive started - remember the receive buffers.
+		}
+        else
+        {
+            // Forget the receive buffers.
+            ZeroMemory(&g_wsaRecvContext, sizeof(g_wsaRecvContext));
+        }
+		NWHOOKAPI_CALL(Real_WSASetLastError)(lasterror);
+
+        return retval;
+	}		
+
+	retval = NWHOOKAPI_CALL(Real_WSARecv)(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
+	lasterror = NWHOOKAPI_CALL(Real_WSAGetLastError)();
+	WriteLog("retval=%d, lasterror=%d", retval, lasterror);
+	NWHOOKAPI_CALL(Real_WSASetLastError)(lasterror);
+
+	return retval;
+}
+
+int WSAAPI
+Hook_WSASend(
+	SOCKET s,
+	LPWSABUF lpBuffers,
+	DWORD dwBufferCount,
+	LPDWORD lpNumberOfBytesSent,
+	DWORD dwFlags,
+	LPWSAOVERLAPPED lpOverlapped,
+	LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
+)
+{
+	WriteLog("WSASend(s=%x, lpBuffers=%p, dwBufferCount=%lu, lpNumberOfBytesSent=%p, dwFlags=%x, lpOverlapped=%p, lpCompletionRoutine=%p)",
+		s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
+
+    int retval, lasterror;
+    if (IsStreamSocket(s) && !g_fTransportSecured)
+	{
+        // Stash the send context.
+		ZeroMemory(&g_wsaSendContext, sizeof(g_wsaSendContext));
+        g_wsaSendContext.socket = s;
+		g_wsaSendContext.lpBuffers = lpBuffers;
+		g_wsaSendContext.dwBufferCount = dwBufferCount;
+		g_wsaSendContext.lpOverlapped = lpOverlapped;
+		g_wsaSendContext.lpCompletionRoutine = lpCompletionRoutine;
+
+        retval = NWHOOKAPI_CALL(Real_WSASend)(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
+        lasterror = NWHOOKAPI_CALL(Real_WSAGetLastError)();
+        WriteLog("retval=%d, lasterror=%d", retval, lasterror);
+        if ((retval == 0) || ((retval == SOCKET_ERROR) && (lasterror == WSA_IO_PENDING)))
+        {
+            // Asynchronous send started - remember the send buffers.
+        }
+        else
+        {
+            // Forget the send buffers.
+            ZeroMemory(&g_wsaSendContext, sizeof(g_wsaSendContext));
+        }
+        NWHOOKAPI_CALL(Real_WSASetLastError)(lasterror);
+
+		return retval;
+	}		
+
+	return NWHOOKAPI_CALL(Real_WSASend)(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
+}
+
+void WSAAPI
+Hook_WSASetLastError(int iError)
+{
+	return NWHOOKAPI_CALL(Real_WSASetLastError)(iError);
+}
+
+SOCKET WSAAPI
+Hook_WSASocketW(
+	int af,
+	int type,
+	int protocol,
+	LPWSAPROTOCOL_INFOW lpProtocolInfo,
+	GROUP g,
+	DWORD dwFlags
+)
+{
+	WriteLog("WSASocketW(af=%d, type=%d, protocol=%d, lpProtocolInfo=%p, dwFlags=%lx)", af, type, protocol, lpProtocolInfo, g, dwFlags);
+
+	SOCKET s = NWHOOKAPI_CALL(Real_WSASocketW)(af, type, protocol, lpProtocolInfo, g, dwFlags);
+	WriteLog("\ts=%x", s);
+	return s;
+}
+
+DWORD WSAAPI
+Hook_WSAWaitForMultipleEvents(
+	DWORD cEvents,
+	const WSAEVENT *lphEvents,
+	BOOL fWaitAll,
+	DWORD dwTimeout,
+	BOOL fAlertable
+)
+{
+	WriteLog("WSAWaitForMultipleEvents(cEvents=%lu, lphEvents=%p, fWaitAll=%d, dwTimeout=%lu, fAlertable=%d)",
+		cEvents, lphEvents, fWaitAll ? 1 : 0, dwTimeout, fAlertable ? 1 : 0);
+	if (lphEvents)
+	{
+		for (DWORD i = 0; i < cEvents; i++)
+		{
+			WriteLog("\thEvent[%lu]=%x", i, lphEvents[i]);
+		}
+	}
+
+	DWORD retval = NWHOOKAPI_CALL(Real_WSAWaitForMultipleEvents)(cEvents, lphEvents, fWaitAll, dwTimeout, fAlertable);
+    int iLastError = WSAGetLastError();
+	WriteLog("retval=%lu", retval);
+    if (g_wsaRecvContext.lpOverlapped)
+    {
+        DWORD cbTransfer = 0;
+        DWORD dwFlags = 0;
+        if (WSAGetOverlappedResult(g_wsaRecvContext.socket, g_wsaRecvContext.lpOverlapped, &cbTransfer, FALSE, &dwFlags))
+        {
+            WriteLog("I/O completed - cbTransfer=%u, dwFlags=%x", cbTransfer, dwFlags);
+        }
+    }
+    WSASetLastError(iLastError);
+	return retval;
+}
+
+int WSAAPI
+Hook_getsockopt(
+	SOCKET s,
+	int level,
+	int optname,
+	char *optval,
+	int *optlen
+)
+{
+	WriteLog("getsockopt(s=%x, level=%d(0x%x), optname=%d(0x%x), optval=%p, optlen=%p)", s, level, level, optname, optname, optval, optlen);
+
+	return NWHOOKAPI_CALL(Real_getsockopt)(s, level, optname, optval, optlen);
+}
+
+int WSAAPI
+Hook_ioctlsocket(
+	SOCKET s,
+	long cmd,
+	u_long *argp
+)
+{
+	WriteLog("ioctlsocket(s=%x, cmd=%ld, argp=%p)", s, cmd, argp);
+
+	int retval = NWHOOKAPI_CALL(Real_ioctlsocket)(s, cmd, argp);
+
+	return retval;
+}
+
+int WSAAPI
 Hook_recv(
 	SOCKET s,
 	char *buf,
@@ -2353,7 +2925,21 @@ Hook_recv(
 	return retval;
 }
 
-int __stdcall
+int WSAAPI
+Hook_select(
+	int nfds,
+	fd_set *readfds,
+	fd_set *writefds,
+	fd_set *exceptfds,
+	const timeval *timeout
+)
+{
+	WriteLog("select(nfds=%d, readfds=%p, writefds=%p, exceptfds=%p, timeout=%p", nfds, readfds, writefds, exceptfds, timeout);
+
+	return NWHOOKAPI_CALL(Real_select)(nfds, readfds, writefds, exceptfds, timeout);
+}
+
+int WSAAPI
 Hook_send(
 	SOCKET s,
 	char *buf,
@@ -2382,6 +2968,20 @@ Hook_send(
 	return NWHOOKAPI_CALL(Real_send)(s, buf, len, flags);
 }
 
+int WSAAPI
+Hook_setsockopt(
+	SOCKET s,
+	int level,
+	int optname,
+	const char *optval,
+	int optlen
+)
+{
+	WriteLog("setsockopt(s=%x, level=%d(0x%x), optname=%d(0x%x), optval=%p, optlen=%d)", s, level, level, optname, optname, optval, optlen);
+
+	return NWHOOKAPI_CALL(Real_setsockopt)(s, level, optname, optval, optlen);
+}
+
 
 ////////////////////////////////////////////////////////////////////////
 //  
@@ -2389,6 +2989,8 @@ Hook_send(
 //
 // Writes a message to a log file.
 //
+static HANDLE g_hWriteLogMutex;
+
 static VOID WriteLog(LPCTSTR szFormat, ...)
 {
 	static BOOL fInitialized = FALSE;
@@ -2402,17 +3004,30 @@ static VOID WriteLog(LPCTSTR szFormat, ...)
 	{
 		if (!fInitialized)
 		{
-			if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, REGISTRY_KEY, 0, KEY_READ | KEY_WOW64_64KEY, &hKey) == ERROR_SUCCESS)
-			{
-				DWORD cbData = sizeof(szFileName);
-				RegQueryValueEx(hKey, TEXT("TraceLog"), NULL, NULL, (LPBYTE)szFileName, &cbData);
-				RegCloseKey(hKey);
-			}
+            if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, REGISTRY_KEY, 0, KEY_READ | KEY_WOW64_64KEY, &hKey) == ERROR_SUCCESS)
+            {
+                DWORD cbData = sizeof(szFileName);
+                RegQueryValueEx(hKey, TEXT("TraceLog"), NULL, NULL, (LPBYTE)szFileName, &cbData);
+                RegCloseKey(hKey);
+            }
+#if 0
+            strcpy(szFileName, "C:\\Windows\\Temp\\mstschook.log");
+#endif
 			fInitialized = TRUE;
 		}
 		if (szFileName[0] == '\0') return;
 
-		fp = fopen(szFileName, "a");
+        if (g_hWriteLogMutex == NULL)
+        {
+            g_hWriteLogMutex = CreateMutex(NULL, FALSE, NULL);
+        }
+
+        if (g_hWriteLogMutex)
+        {
+            //WaitForSingleObject(g_hWriteLogMutex, INFINITE);
+        }
+
+        fp = fopen(szFileName, "a");
 		if (fp)
 		{
 			TCHAR szTimeStamp[30];
@@ -2434,6 +3049,11 @@ static VOID WriteLog(LPCTSTR szFormat, ...)
 			_ftprintf(fp, TEXT("WriteLog exception occurred!\n"));
 			fclose(fp);
 		}
+	}
+
+	if (g_hWriteLogMutex)
+	{
+		ReleaseMutex(g_hWriteLogMutex);
 	}
 }
 
@@ -2503,7 +3123,7 @@ static BOOL DoProcessAttach()
 	TCHAR szFileName[MAX_PATH];
 	GetModuleFileName(NULL, szFileName, sizeof(szFileName));
 	if (!ModuleInHookList(szFileName)) return FALSE;
-	WriteLog("Loaded into %s...", szFileName);
+	//WriteLog("Loaded into %s...", szFileName);
 
 	g_hMutex = CreateMutex(NULL, FALSE, "MsTscHookMutex");
 
@@ -2518,6 +3138,17 @@ static BOOL DoProcessAttach()
 
 	NWHOOKAPI_BEGIN;
 
+	// Hook entry points in KERNEL32.DLL.
+	g_hModKernel32 = LoadLibrary("KERNEL32.DLL");
+	if (g_hModKernel32)
+	{
+        NWHOOKAPI_ATTACH(GetProcAddress(g_hModKernel32, "CloseThreadpoolIo"), LPCloseThreadpoolIo, Real_CloseThreadpoolIo, Hook_CloseThreadpoolIo);
+        NWHOOKAPI_ATTACH(GetProcAddress(g_hModKernel32, "CreateThreadpoolIo"), LPCreateThreadpoolIo, Real_CreateThreadpoolIo, Hook_CreateThreadpoolIo);
+        NWHOOKAPI_ATTACH(GetProcAddress(g_hModKernel32, "GetOverlappedResult"), LPGetOverlappedResult, Real_GetOverlappedResult, Hook_GetOverlappedResult);
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModKernel32, "GetOverlappedResultEx"), LPGetOverlappedResultEx, Real_GetOverlappedResultEx, Hook_GetOverlappedResultEx);
+        NWHOOKAPI_ATTACH(GetProcAddress(g_hModKernel32, "StartThreadpoolIo"), LPStartThreadpoolIo, Real_StartThreadpoolIo, Hook_StartThreadpoolIo);
+    }
+
 	// Hook entry points in MSTSCAX.DLL.
 	g_hModMsTscAx = LoadLibrary("MSTSCAX.DLL");
 	if (g_hModMsTscAx)
@@ -2525,7 +3156,7 @@ static BOOL DoProcessAttach()
 		NWHOOKAPI_ATTACH(GetProcAddress(g_hModMsTscAx, "DllGetClassObject"), LPDllGetClassObject, Real_DllGetClassObject, Hook_DllGetClassObject);
 	}
   	
-	// Hook entry points in SSPICLI.DLL.
+    // Hook entry points in SSPICLI.DLL.
 	g_hModSspiCli = GetModuleHandle("SSPICLI.DLL");
 	if (g_hModSspiCli)
 	{
@@ -2540,13 +3171,28 @@ static BOOL DoProcessAttach()
 	g_hModWinsock = GetModuleHandle("WS2_32.DLL");
 	if (g_hModWinsock)
 	{
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "WSAAsyncSelect"), LPWSAAsyncSelect, Real_WSAAsyncSelect, Hook_WSAAsyncSelect);
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "WSAEnumNetworkEvents"), LPWSAEnumNetworkEvents, Real_WSAEnumNetworkEvents, Hook_WSAEnumNetworkEvents);
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "WSAEventSelect"), LPWSAEventSelect, Real_WSAEventSelect, Hook_WSAEventSelect);
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "WSAGetLastError"), LPWSAGetLastError, Real_WSAGetLastError, Hook_WSAGetLastError);
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "WSAGetOverlappedResult"), LPWSAGetOverlappedResult, Real_WSAGetOverlappedResult, Hook_WSAGetOverlappedResult);
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "WSAIoctl"), LPWSAIoctl, Real_WSAIoctl, Hook_WSAIoctl);
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "WSARecv"), LPWSARecv, Real_WSARecv, Hook_WSARecv);
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "WSASend"), LPWSASend, Real_WSASend, Hook_WSASend);
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "WSASetLastError"), LPWSASetLastError, Real_WSASetLastError, Hook_WSASetLastError);
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "WSASocketW"), LPWSASocketW, Real_WSASocketW, Hook_WSASocketW);
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "WSAWaitForMultipleEvents"), LPWSAWaitForMultipleEvents, Real_WSAWaitForMultipleEvents, Hook_WSAWaitForMultipleEvents);
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "getsockopt"), LPgetsockopt, Real_getsockopt, Hook_getsockopt);
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "ioctlsocket"), LPioctlsocket, Real_ioctlsocket, Hook_ioctlsocket);
 		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "recv"), LPrecv, Real_recv, Hook_recv);
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "select"), LPselect, Real_select, Hook_select);
 		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "send"), LPsend, Real_send, Hook_send);
+		NWHOOKAPI_ATTACH(GetProcAddress(g_hModWinsock, "setsockopt"), LPsetsockopt, Real_setsockopt, Hook_setsockopt);
 	}
 
 	NWHOOKAPI_COMMIT;
 
-	return TRUE;
+    return TRUE;
 }
 
 
@@ -2568,10 +3214,17 @@ static VOID DoProcessDetach()
 
 	NWHOOKAPI_BEGIN;
 
+	// Unhook functions in KERNEL32.DLL.
+    NWHOOKAPI_DETACH(Real_CloseThreadpoolIo, Hook_CloseThreadpoolIo);
+	NWHOOKAPI_DETACH(Real_CreateThreadpoolIo, Hook_CreateThreadpoolIo);
+	NWHOOKAPI_DETACH(Real_GetOverlappedResult, Hook_GetOverlappedResult);
+	NWHOOKAPI_DETACH(Real_GetOverlappedResultEx, Hook_GetOverlappedResultEx);
+    NWHOOKAPI_DETACH(Real_StartThreadpoolIo, Hook_StartThreadpoolIo);
+
 	// Unhook functions in MSTSCAX.DLL.
 	NWHOOKAPI_DETACH(Real_DllGetClassObject, Hook_DllGetClassObject);
 
-	// Unhook functions in SSPICLI.DLL.
+    // Unhook functions in SSPICLI.DLL.
 	NWHOOKAPI_DETACH(Real_AcceptSecurityContext, Hook_AcceptSecurityContext);
 	NWHOOKAPI_DETACH(Real_AcquireCredentialsHandleA, Hook_AcquireCredentialsHandleA);
 	NWHOOKAPI_DETACH(Real_AcquireCredentialsHandleW, Hook_AcquireCredentialsHandleW);
@@ -2579,10 +3232,26 @@ static VOID DoProcessDetach()
 	NWHOOKAPI_DETACH(Real_EncryptMessage, Hook_EncryptMessage);
 	
 	// Unhook functions in WS2_32.DLL.
+	NWHOOKAPI_DETACH(Real_WSAAsyncSelect, Hook_WSAAsyncSelect);
+	NWHOOKAPI_DETACH(Real_WSAEnumNetworkEvents, Hook_WSAEnumNetworkEvents);
+	NWHOOKAPI_DETACH(Real_WSAEventSelect, Hook_WSAEventSelect);
+	NWHOOKAPI_DETACH(Real_WSAGetLastError, Hook_WSAGetLastError);
+	//NWHOOKAPI_DETACH(Real_WSAGetOverlappedResult, Hook_WSAGetOverlappedResult);
+	NWHOOKAPI_DETACH(Real_WSAIoctl, Hook_WSAIoctl);
+	NWHOOKAPI_DETACH(Real_WSARecv, Hook_WSARecv);
+	NWHOOKAPI_DETACH(Real_WSASend, Hook_WSASend);
+	NWHOOKAPI_DETACH(Real_WSASetLastError, Hook_WSASetLastError);
+	NWHOOKAPI_DETACH(Real_WSASocketW, Hook_WSASocketW);
+	NWHOOKAPI_DETACH(Real_WSAWaitForMultipleEvents, Hook_WSAWaitForMultipleEvents);
+	NWHOOKAPI_DETACH(Real_getsockopt, Hook_getsockopt);
+	NWHOOKAPI_DETACH(Real_ioctlsocket, Hook_ioctlsocket);
 	NWHOOKAPI_DETACH(Real_recv, Hook_recv);
+	NWHOOKAPI_DETACH(Real_select, Hook_select);
 	NWHOOKAPI_DETACH(Real_send, Hook_send);
 
 	NWHOOKAPI_COMMIT;
+
+	CloseHandle(g_hWriteLogMutex);
 }
 
 

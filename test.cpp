@@ -13,6 +13,8 @@
 //
 //======================================================================
 
+#define SECURITY_WIN32
+
 #include <intrin.h>
 #include <windows.h>
 #include <sspi.h>

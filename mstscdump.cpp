@@ -2,7 +2,7 @@
  * mstscdump: MSTSC Packet Dump Utility
  * MSTSC Launch and Hook Process
  *
- * Copyright 2014 Mike McDonald <mikem@nogginware.com>
+ * Copyright 2014-2022 Mike McDonald <mikem@nogginware.com>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,12 +17,14 @@
  * limitations under the License.
  */
 
+#define _CRT_SECURE_NO_WARNINGS
+
 #include <intrin.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <windows.h>
 
-BOOL EnableSecurityRights(LPTSTR DesiredAccess, BOOL bOn)
+BOOL EnableSecurityRights(LPCTSTR DesiredAccess, BOOL bOn)
 {
 	HANDLE hToken; 
 	TOKEN_PRIVILEGES tkp; 
@@ -148,10 +150,10 @@ static BOOL IsFile(char *arg)
 	return TRUE;
 }
 
-void main(int argc, char **argv)
+int main(int argc, char **argv)
 {
 	char szCommandLine[2048];
-	STARTUPINFO StartupInfo;
+	STARTUPINFOA StartupInfo;
 	PROCESS_INFORMATION ProcessInfo;
 	BOOL fSuccess;
 
@@ -171,7 +173,7 @@ void main(int argc, char **argv)
 
 	ZeroMemory(&ProcessInfo, sizeof(ProcessInfo));
 
-	fSuccess = CreateProcess(
+	fSuccess = CreateProcessA(
 		NULL,
 		szCommandLine,
 		NULL,
@@ -192,4 +194,6 @@ void main(int argc, char **argv)
 	WaitForSingleObject(ProcessInfo.hProcess, INFINITE);
 	CloseHandle(ProcessInfo.hProcess);
 	CloseHandle(ProcessInfo.hThread);
+
+    return 0;
 }

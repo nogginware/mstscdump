@@ -2,7 +2,7 @@
 //
 // NWHookAPI.h
 //
-// Copyright (C) 2014 Nogginware Corporation
+// Copyright (C) 2014-2022 Nogginware Corporation
 //
 // Enables hooking of Windows system calls.
 //
@@ -26,26 +26,7 @@
 #define NWHOOKAPI_HOOK(_type, _name) _type _name
 #define NWHOOKAPI_CALL(_name) (_name)
 
-#if defined(_X86_)
-
-#include "detours15\detours.h"
-
-#define NWHOOKAPI_BEGIN
-#define NWHOOKAPI_COMMIT
-
-#define NWHOOKAPI_ATTACH(_proc, _type, _real, _hook) \
-{ \
-  _real = (_type)DetourFunction((PBYTE)_proc, (PBYTE)_hook); \
-}
-
-#define NWHOOKAPI_DETACH(_real, _hook) \
-{ \
-  if (_real) DetourRemove((PBYTE)_real, (PBYTE)_hook); \
-}
-
-#elif defined(_AMD64_)
-
-#include "detours21\detours.h"
+#include "detours.h"
 
 #define NWHOOKAPI_BEGIN \
 { \
@@ -65,11 +46,6 @@
 { \
   if (_real) DetourDetach(&(PVOID&)_real, _hook); \
 }
-
-#else
-**** _X86_ or _AMD64_ must be defined for Detours hooking
-#endif
-
 
 ////////////////////////////////////////////////////////////////////////
 //

@@ -71,12 +71,12 @@ struct { \
 
 #define NWHOOKAPI_ATTACH(_proc, _type, _real, _hook) \
 { \
-	_type _addr = (_type)_proc; \
-	if (_addr) cNktHookMgr.Hook(&_real.nHookId, (LPVOID *)&_real.pProcAddr, _proc, _hook); \
+    _type _addr = (_type)_proc; \
+    if (_addr) cNktHookMgr.Hook(&_real.nHookId, (LPVOID *)&_real.pProcAddr, _proc, _hook); \
 }
 #define NWHOOKAPI_DETACH(_real, _hook) \
 { \
-	cNktHookMgr.Unhook(_real.nHookId); \
+    cNktHookMgr.Unhook(_real.nHookId); \
 }
 
 

@@ -23,16 +23,13 @@ CFLAGS=/nologo /D_AMD64_ /EHsc /MT /Ox $(CFLAGS)
 LIBS=advapi32.lib secur32.lib user32.lib ws2_32.lib $(X64_LIBS)
 !ENDIF
 
-all: mstscdump.exe mstschook.dll test.exe
+all: mstscdump.exe mstschook.dll
 
 mstscdump.exe: mstscdump.cpp
   cl $(CFLAGS) mstscdump.cpp $(LIBS)
 
-mstschook.dll: mstschook.cpp nwhookapi.cpp
-  cl $(CFLAGS) /LD /Femstschook.dll mstschook.cpp nwhookapi.cpp $(LIBS)
-
-test.exe: test.cpp nwhookapi.cpp
-  cl $(CFLAGS) test.cpp nwhookapi.cpp $(LIBS)
+mstschook.dll: mstschook.cpp
+  cl $(CFLAGS) /LD /Femstschook.dll mstschook.cpp $(LIBS)
 
 clean:
   del /q *.obj

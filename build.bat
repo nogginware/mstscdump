@@ -17,7 +17,6 @@
 @nmake /nologo clean all -f Makefile CFG="Release32" USE_DETOURS=%USE_DETOURS% || goto ERROR_EXIT
 @copy mstscdump.exe bin\x86 || goto ERROR_EXIT
 @copy mstschook.dll bin\x86 || goto ERROR_EXIT
-@copy test.exe bin\x86 || goto ERROR_EXIT
 @nmake /nologo clean -f Makefile CFG="Release32" USE_DETOURS=%USE_DETOURS% || goto ERROR_EXIT
 
 @SETLOCAL
@@ -27,7 +26,6 @@
 @nmake /nologo clean all -f Makefile CFG="Release64" USE_DETOURS=%USE_DETOURS% || goto ERROR_EXIT
 @copy mstscdump.exe bin\x64 || goto ERROR_EXIT
 @copy mstschook.dll bin\x64 || goto ERROR_EXIT
-@copy test.exe bin\x64 || goto ERROR_EXIT
 @nmake /nologo clean -f Makefile CFG="Release64" USE_DETOURS=%USE_DETOURS% || goto ERROR_EXIT
 
 @ENDLOCAL
